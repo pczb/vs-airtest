@@ -1,0 +1,123 @@
+{
+  "name": "vsairtest",
+  "displayName": "VS AirTest",
+  "description": "VS Code extension for Airtest-style Android screenshot capture, crop templates, and hover previews.",
+  "version": "0.0.1",
+  "publisher": "pczb",
+  "license": "SEE LICENSE IN LICENSE",
+  "icon": "icon.png",
+  "galleryBanner": {
+    "color": "#0f172a",
+    "theme": "dark"
+  },
+  "homepage": "https://github.com/pczb/androidHelper#readme",
+  "bugs": {
+    "url": "https://github.com/pczb/androidHelper/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pczb/androidHelper.git"
+  },
+  "keywords": [
+    "airtest",
+    "android",
+    "adb",
+    "screenshot",
+    "crop",
+    "template",
+    "hover",
+    "vscode"
+  ],
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:vsairtest.captureScreenshot",
+    "onCommand:vsairtest.cleanCropImages",
+    "onCommand:vsairtest.enableHoverPreview",
+    "onCommand:vsairtest.disableHoverPreview",
+    "onCustomEditor:vsairtest.imagePreview"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "VS AirTest",
+      "properties": {
+        "vsairtest.adbCommand": {
+          "type": "string",
+          "default": "adb",
+          "description": "ADB command used for screenshots. Example: adb -s 127.0.0.1:16384"
+        },
+        "vsairtest.templateDir": {
+          "type": "string",
+          "default": "assets/templates/",
+          "description": "Directory for saved crop images, relative to the workspace folder unless absolute."
+        }
+      }
+    },
+    "customEditors": [
+      {
+        "viewType": "vsairtest.imagePreview",
+        "displayName": "VS AirTest Preview",
+        "selector": [
+          {
+            "filenamePattern": "*.png"
+          }
+        ],
+        "priority": "option"
+      }
+    ],
+    "commands": [
+      {
+        "command": "vsairtest.captureScreenshot",
+        "title": "Capture Screenshot"
+      },
+      {
+        "command": "vsairtest.cleanCropImages",
+        "title": "Clean Crop Images"
+      },
+      {
+        "command": "vsairtest.enableHoverPreview",
+        "title": "Enable Hover Preview"
+      },
+      {
+        "command": "vsairtest.disableHoverPreview",
+        "title": "Disable Hover Preview"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "webpack",
+    "compile:install": "node scripts/install-extension.mjs",
+    "watch": "webpack --watch",
+    "package": "webpack --mode production --devtool hidden-source-map",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.9",
+    "@types/node": "20.x",
+    "@types/sharp": "^0.32.0",
+    "@types/vscode": "^1.95.0",
+    "@typescript-eslint/eslint-plugin": "^8.10.0",
+    "@typescript-eslint/parser": "^8.7.0",
+    "@vscode/test-cli": "^0.0.10",
+    "@vscode/test-electron": "^2.4.1",
+    "eslint": "^9.13.0",
+    "ts-loader": "^9.5.1",
+    "typescript": "^5.6.3",
+    "webpack": "^5.95.0",
+    "webpack-cli": "^5.1.4"
+  },
+  "dependencies": {
+    "sharp": "^0.28.3"
+  }
+}
