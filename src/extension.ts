@@ -360,7 +360,8 @@ function calcPos(pos: { x: number, y: number, width: number, height: number }, r
     const y = pos.y + pos.height / 2;
 
     const delta_x = ((x - width * 0.5) / width).toFixed(3);
-    const delta_y = ((y - height * 0.5) / height).toFixed(3);
+    // Airtest uses the screenshot width as the normalization base for both axes.
+    const delta_y = ((y - height * 0.5) / width).toFixed(3);
     return { delta_x: delta_x, delta_y: delta_y };
 }
 

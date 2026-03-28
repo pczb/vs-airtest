@@ -9,6 +9,10 @@ Check [Keep a Changelog](https://keepachangelog.com/) for recommendations on how
 - Renamed the extension to VS AirTest and unified the manifest, settings, and commands around the `vsairtest` namespace
 - Switched the screenshot editor to keyboard-friendly shortcuts for copy and save flows
 
+## [0.0.2] - 2026-03-28
+
+- Aligned Airtest `record_pos` calculation with the upstream normalization rule
+
 ## [0.0.1] - 2026-03-28
 
 - Initial public release

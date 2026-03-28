@@ -2,8 +2,8 @@
   "name": "vsairtest",
   "displayName": "VS AirTest",
   "description": "VS Code extension for Airtest-style Android screenshot capture, crop templates, and hover previews.",
-  "version": "0.0.1",
-  "publisher": "pczb",
+  "version": "0.0.2",
+  "publisher": "tigerzhang",
   "license": "SEE LICENSE IN LICENSE",
   "icon": "icon.png",
   "galleryBanner": {
