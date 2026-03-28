@@ -25,9 +25,9 @@ The toolbar still provides buttons for the same actions if you prefer mouse clic
 
 ## Screenshots And Demo
 
-![Capture Screenshot](https://raw.githubusercontent.com/pczb/androidHelper/main/docs/images/image.png)
+![Capture Screenshot](https://raw.githubusercontent.com/pczb/vs-airtest/main/docs/images/image.png)
 
-![Template Preview](https://raw.githubusercontent.com/pczb/androidHelper/main/docs/images/image-1.png)
+![Template Preview](https://raw.githubusercontent.com/pczb/vs-airtest/main/docs/images/image-1.png)
 
 ## Installation
 

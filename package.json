@@ -10,13 +10,13 @@
     "color": "#0f172a",
     "theme": "dark"
   },
-  "homepage": "https://github.com/pczb/androidHelper#readme",
+  "homepage": "https://github.com/pczb/vs-airtest#readme",
   "bugs": {
-    "url": "https://github.com/pczb/androidHelper/issues"
+    "url": "https://github.com/pczb/vs-airtest/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/pczb/androidHelper.git"
+    "url": "https://github.com/pczb/vs-airtest.git"
   },
   "keywords": [
     "airtest",

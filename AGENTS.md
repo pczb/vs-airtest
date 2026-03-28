@@ -16,4 +16,4 @@ Tests use the VS Code extension test runner with Mocha-style `suite()` and `test
 The current history uses Conventional Commit style (`feat: android helper`), so keep using prefixes like `feat:`, `fix:`, and `docs:`. Keep commits focused and small. PRs should include a short description, linked issue if one exists, test notes, and screenshots or GIFs for UI or webview changes.
 
 ## Configuration Tips
-The extension reads `androidhelper.adbPath` from VS Code settings. Avoid hardcoding machine-specific paths in new changes; prefer workspace settings or extension configuration instead.
+The extension reads `vs-airtest.adbPath` from VS Code settings. Avoid hardcoding machine-specific paths in new changes; prefer workspace settings or extension configuration instead.

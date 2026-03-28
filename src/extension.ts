@@ -4,7 +4,7 @@ import * as fs from 'fs';
 // const sharp = require('sharp') as any;
 
 const EXTENSION_ID = 'vsairtest';
-const LEGACY_EXTENSION_ID = 'androidhelper';
+const LEGACY_EXTENSION_ID = 'vs-airtest';
 const IMAGE_PREVIEW_VIEW_TYPE = 'vsairtest.imagePreview';
 const CAPTURE_SCREENSHOT_COMMAND = 'vsairtest.captureScreenshot';
 const CLEAN_CROP_IMAGES_COMMAND = 'vsairtest.cleanCropImages';
