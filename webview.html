@@ -7,13 +7,14 @@
   <style>
     :root {
       color-scheme: light dark;
-      --toolbar-height: 52px;
+      --toolbar-height: 94px;
       --panel-bg: var(--vscode-editor-background);
       --panel-border: var(--vscode-editorWidget-border);
       --text: var(--vscode-editor-foreground);
       --muted: var(--vscode-descriptionForeground);
-      --accent: var(--vscode-button-background);
-      --accent-hover: var(--vscode-button-hoverBackground);
+      --input-bg: var(--vscode-input-background);
+      --input-border: var(--vscode-input-border);
+      --input-foreground: var(--vscode-input-foreground);
       --selection: rgba(220, 80, 80, 0.72);
       --selection-fill: rgba(220, 80, 80, 0.16);
     }
@@ -37,46 +38,57 @@
     #toolbar {
       height: var(--toolbar-height);
       display: flex;
-      align-items: center;
+      align-items: stretch;
       justify-content: space-between;
       gap: 12px;
-      padding: 0 14px;
+      padding: 10px 14px;
       border-bottom: 1px solid var(--panel-border);
       background: color-mix(in srgb, var(--panel-bg) 88%, black 12%);
       box-sizing: border-box;
       flex: 0 0 auto;
     }
 
-    #actions {
+    #config {
       display: flex;
-      align-items: center;
-      gap: 8px;
+      align-items: flex-end;
+      gap: 10px;
       flex-wrap: wrap;
+      flex: 1 1 auto;
+      min-width: 0;
     }
 
-    button {
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 220px;
+    }
+
+    .field label {
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .field input {
       appearance: none;
-      border: 1px solid transparent;
+      height: 30px;
+      padding: 0 10px;
+      border: 1px solid var(--input-border, var(--panel-border));
       border-radius: 6px;
-      padding: 6px 10px;
       font: inherit;
-      color: var(--vscode-button-foreground);
-      background: var(--accent);
-      cursor: pointer;
+      color: var(--input-foreground, var(--text));
+      background: var(--input-bg, var(--panel-bg));
+      outline: none;
     }
 
-    button:hover {
-      background: var(--accent-hover);
+    .field input:focus {
+      border-color: var(--vscode-focusBorder);
     }
 
-    button.secondary {
-      color: var(--text);
-      background: transparent;
-      border-color: var(--panel-border);
-    }
-
-    button.secondary:hover {
-      background: color-mix(in srgb, var(--panel-bg) 80%, white 20%);
+    #saveConfigHint {
+      color: var(--muted);
+      font-size: 11px;
+      white-space: nowrap;
     }
 
     #status {
@@ -198,30 +210,39 @@
 
 <body>
   <div id="toolbar">
-    <div id="actions">
-      <button id="startUpdate">Start Update</button>
-      <button id="stopUpdate" class="secondary">Stop Update</button>
-      <button id="updateOnce" class="secondary">Refresh Once</button>
-      <button id="copy" class="secondary">Copy Coords</button>
-      <button id="save" class="secondary">Save Crop</button>
-      <button id="clean" class="secondary">Clean Crops</button>
+    <div id="config">
+      <div class="field">
+        <label for="adbCommand">ADB Command</label>
+        <input id="adbCommand" type="text" value="__ADB_COMMAND__" spellcheck="false">
+      </div>
+      <div class="field">
+        <label for="adbConnectTarget">ADB Connect Target</label>
+        <input id="adbConnectTarget" type="text" value="__ADB_CONNECT_TARGET__" placeholder="127.0.0.1:5555" spellcheck="false">
+      </div>
+      <div id="saveConfigHint"><kbd>Enter</kbd> Save config</div>
     </div>
     <div id="status">
       <strong id="mouseCoords">Mouse: X: 0, Y: 0</strong>
       <span id="imageInfo">Image: loading...</span>
+      <span id="captureStatus">Capture: manual</span>
     </div>
   </div>
 
   <div id="shortcutHint">
     <span><kbd>Drag</kbd> Copy coordinates</span>
-    <span><kbd>Ctrl</kbd>/<kbd>Cmd</kbd> + <kbd>Drag</kbd> Save template</span>
+    <span><kbd>__MODIFIER_KEY__</kbd> + <kbd>Drag</kbd> Save template</span>
     <span><kbd>Click</kbd> Copy point coordinates</span>
+    <span><kbd>__MODIFIER_KEY__</kbd> + <kbd>Click</kbd> Tap device and refresh</span>
+    <span><kbd>R</kbd> Refresh once</span>
+    <span><kbd>A</kbd> Start/stop auto refresh</span>
+    <span><kbd>S</kbd> Save crop</span>
+    <span><kbd>X</kbd> Clean crops</span>
   </div>
 
   <div id="viewport">
     <div id="stage-shell">
       <div id="stage">
-        <img id="screenshot" src="${imageUrl}" alt="Screenshot">
+        <img id="screenshot" src="__IMAGE_URL__" alt="Screenshot">
         <div id="selection"></div>
       </div>
     </div>
@@ -235,6 +256,9 @@
     const selectionText = document.getElementById('selectionText');
     const mouseCoords = document.getElementById('mouseCoords');
     const imageInfo = document.getElementById('imageInfo');
+    const captureStatus = document.getElementById('captureStatus');
+    const adbCommandInput = document.getElementById('adbCommand');
+    const adbConnectTargetInput = document.getElementById('adbConnectTarget');
 
     let isDragging = false;
     let isPointerDown = false;
@@ -243,6 +267,11 @@
     let end = { x: 0, y: 0 };
     let currentResolution = { width: 0, height: 0 };
     let activeMode = 'coords';
+    let autoRefreshEnabled = false;
+    let lastSavedAdbConfig = {
+      adbCommand: adbCommandInput.value,
+      adbConnectTarget: adbConnectTargetInput.value
+    };
 
     function updateImageInfo() {
       if (!currentResolution.width || !currentResolution.height) {
@@ -259,6 +288,10 @@
       selection.style.width = '0px';
       selection.style.height = '0px';
       selectionText.textContent = '(0, 0, 0, 0)';
+    }
+
+    function updateCaptureStatus() {
+      captureStatus.textContent = `Capture: ${autoRefreshEnabled ? 'auto' : 'manual'}`;
     }
 
     function normalizeRect(a, b) {
@@ -318,6 +351,42 @@
       });
     }
 
+    function saveAdbConfig() {
+      lastSavedAdbConfig = {
+        adbCommand: adbCommandInput.value,
+        adbConnectTarget: adbConnectTargetInput.value
+      };
+      vscode.postMessage({
+        command: 'saveAdbConfig',
+        adbCommand: lastSavedAdbConfig.adbCommand,
+        adbConnectTarget: lastSavedAdbConfig.adbConnectTarget
+      });
+    }
+
+    function hasPendingAdbChanges() {
+      return adbCommandInput.value !== lastSavedAdbConfig.adbCommand
+        || adbConnectTargetInput.value !== lastSavedAdbConfig.adbConnectTarget;
+    }
+
+    function requestRefresh() {
+      if (hasPendingAdbChanges()) {
+        saveAdbConfig();
+        return;
+      }
+
+      vscode.postMessage({ command: 'updateOnce' });
+    }
+
+    function toggleAutoRefresh() {
+      autoRefreshEnabled = !autoRefreshEnabled;
+      if (autoRefreshEnabled && hasPendingAdbChanges()) {
+        saveAdbConfig();
+      } else {
+        vscode.postMessage({ command: autoRefreshEnabled ? 'startUpdate' : 'stopUpdate' });
+      }
+      updateCaptureStatus();
+    }
+
     screenshot.addEventListener('load', () => {
       currentResolution = {
         width: screenshot.naturalWidth,
@@ -329,6 +398,7 @@
 
     screenshot.addEventListener('dragstart', (event) => event.preventDefault());
     screenshot.addEventListener('drop', (event) => event.preventDefault());
+    screenshot.addEventListener('contextmenu', (event) => event.preventDefault());
 
     screenshot.addEventListener('mousemove', (event) => {
       if (!isPointerDown) {
@@ -352,6 +422,10 @@
         return;
       }
 
+      if (event.button !== 0) {
+        return;
+      }
+
       activeMode = (event.metaKey || event.ctrlKey) ? 'template' : 'coords';
       isPointerDown = true;
       isDragging = false;
@@ -368,7 +442,18 @@
       isPointerDown = false;
 
       if (!hasMoved) {
-        if (!event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) {
+        if (event.metaKey || event.ctrlKey) {
+          if (hasPendingAdbChanges()) {
+            saveAdbConfig();
+            clearSelection();
+            activeMode = 'coords';
+            return;
+          }
+          vscode.postMessage({
+            command: 'tapScreen',
+            point: start
+          });
+        } else if (!event.shiftKey && !event.altKey) {
           sendPointSelection(start);
         }
         clearSelection();
@@ -417,31 +502,53 @@
       activeMode = 'coords';
     });
 
-    document.getElementById('startUpdate').addEventListener('click', () => {
-      vscode.postMessage({ command: 'startUpdate' });
+    adbCommandInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        saveAdbConfig();
+      }
     });
 
-    document.getElementById('stopUpdate').addEventListener('click', () => {
-      vscode.postMessage({ command: 'stopUpdate' });
+    adbConnectTargetInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        saveAdbConfig();
+      }
     });
 
-    document.getElementById('updateOnce').addEventListener('click', () => {
-      vscode.postMessage({ command: 'updateOnce' });
-    });
+    window.addEventListener('keydown', (event) => {
+      if (event.target instanceof HTMLInputElement) {
+        return;
+      }
 
-    document.getElementById('copy').addEventListener('click', () => {
-      vscode.postMessage({
-        command: 'copySelection',
-        text: selectionText.textContent
-      });
-    });
+      if (event.repeat) {
+        return;
+      }
 
-    document.getElementById('save').addEventListener('click', () => {
-      vscode.postMessage({ command: 'saveSelection' });
-    });
+      const key = event.key.toLowerCase();
+      if (key === 'r') {
+        event.preventDefault();
+        requestRefresh();
+        return;
+      }
 
-    document.getElementById('clean').addEventListener('click', () => {
-      vscode.postMessage({ command: 'cleanCropImage' });
+      if (key === 'a') {
+        event.preventDefault();
+        toggleAutoRefresh();
+        return;
+      }
+
+      if (key === 's') {
+        event.preventDefault();
+        vscode.postMessage({ command: 'saveSelection' });
+        return;
+      }
+
+      if (key === 'x') {
+        event.preventDefault();
+        vscode.postMessage({ command: 'cleanCropImage' });
+        return;
+      }
     });
 
     window.addEventListener('message', (event) => {
@@ -461,6 +568,7 @@
     }
 
     updateImageInfo();
+    updateCaptureStatus();
   </script>
 </body>
 

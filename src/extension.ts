@@ -1,21 +1,14 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-// const sharp = require('sharp') as any;
 
 const EXTENSION_ID = 'vsairtest';
 const LEGACY_EXTENSION_ID = 'vs-airtest';
-const IMAGE_PREVIEW_VIEW_TYPE = 'vsairtest.imagePreview';
+const AIRTEST_WORKBENCH_VIEW_TYPE = 'vsairtest.airtestWorkbench';
 const CAPTURE_SCREENSHOT_COMMAND = 'vsairtest.captureScreenshot';
 const CLEAN_CROP_IMAGES_COMMAND = 'vsairtest.cleanCropImages';
 const ENABLE_HOVER_PREVIEW_COMMAND = 'vsairtest.enableHoverPreview';
 const DISABLE_HOVER_PREVIEW_COMMAND = 'vsairtest.disableHoverPreview';
-
-class ReadonlyImageDocument implements vscode.CustomDocument {
-    constructor(public readonly uri: vscode.Uri) { }
-
-    dispose(): void { }
-}
 
 type CropSelection = {
     pos: { x: number; y: number; width: number; height: number };
@@ -24,299 +17,177 @@ type CropSelection = {
 };
 
 type SelectionMode = 'coords' | 'template' | 'point';
-type SelectionMessage = {
-    command: 'selectedArea';
-    mode: SelectionMode;
-    pos?: { x: number; y: number; width: number; height: number };
-    point?: { x: number; y: number };
-    resolution?: { width: number; height: number };
-    content?: string;
-};
+type WebviewMessage =
+    | {
+        command: 'selectedArea';
+        mode: SelectionMode;
+        pos?: { x: number; y: number; width: number; height: number };
+        point?: { x: number; y: number };
+        resolution?: { width: number; height: number };
+        content?: string;
+    }
+    | { command: 'saveSelection' }
+    | { command: 'cleanCropImage' }
+    | { command: 'startUpdate' }
+    | { command: 'stopUpdate' }
+    | { command: 'updateOnce' }
+    | { command: 'tapScreen'; point?: { x: number; y: number } }
+    | { command: 'saveAdbConfig'; adbCommand?: string; adbConnectTarget?: string };
 
-class ImagePreviewEditorProvider implements vscode.CustomReadonlyEditorProvider<ReadonlyImageDocument> {
-    private activePanel: vscode.WebviewPanel | undefined;
-    private activeDocumentUri: string | undefined;
-    private readonly selectionByDocument = new Map<string, CropSelection>();
+class AirtestWorkbenchPanel {
+    private panel: vscode.WebviewPanel | undefined;
+    private currentSelection: CropSelection | undefined;
+    private currentAdbCommand = getAdbCommand();
+    private currentAdbConnectTarget = getAdbConnectTarget(this.currentAdbCommand);
+    private updateInterval: NodeJS.Timeout | undefined;
+    private readonly isMac = process.platform === 'darwin';
 
     constructor(private readonly context: vscode.ExtensionContext) { }
 
-    openCustomDocument(
-        uri: vscode.Uri,
-        _openContext: vscode.CustomDocumentOpenContext,
-        _token: vscode.CancellationToken
-    ): ReadonlyImageDocument {
-        return new ReadonlyImageDocument(uri);
-    }
+    async revealAndCapture(): Promise<void> {
+        if (!this.panel) {
+            this.panel = vscode.window.createWebviewPanel(
+                AIRTEST_WORKBENCH_VIEW_TYPE,
+                'Airtest Workbench',
+                { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
+                {
+                    enableScripts: true,
+                    retainContextWhenHidden: true,
+                    localResourceRoots: [this.context.extensionUri]
+                }
+            );
 
-    async resolveCustomEditor(
-        document: ReadonlyImageDocument,
-        webviewPanel: vscode.WebviewPanel,
-        _token: vscode.CancellationToken
-    ): Promise<void> {
-        this.activePanel = webviewPanel;
-        this.activeDocumentUri = document.uri.toString();
-        webviewPanel.webview.options = {
-            enableScripts: true,
-            localResourceRoots: [this.context.extensionUri]
-        };
-
-        webviewPanel.webview.html = await getWebviewContent(this.context, document.uri.fsPath);
-
-        let updateInterval: NodeJS.Timeout | undefined;
-
-        const refreshImage = async () => {
-            if (this.activePanel !== webviewPanel) {
-                return;
-            }
-            const imageUrl = await readImageAsDataUrl(document.uri.fsPath);
-            await webviewPanel.webview.postMessage({
-                command: 'refreshImage',
-                imageUrl
+            this.panel.onDidDispose(() => {
+                this.stopAutoUpdate();
+                this.panel = undefined;
             });
-        };
 
-        const captureAndRefresh = async () => {
-            try {
-                await captureScreenshot(document.uri.fsPath, getAdbCommand());
-                await refreshImage();
-            } catch (error) {
-                vscode.window.showErrorMessage(`Error taking screenshot: ${error instanceof Error ? error.message : String(error)}`);
-            }
-        };
+            this.panel.webview.onDidReceiveMessage(async (message: WebviewMessage) => {
+                await this.handleMessage(message);
+            });
+        } else {
+            this.panel.reveal(vscode.ViewColumn.Beside, true);
+        }
 
-        const messageSubscription = webviewPanel.webview.onDidReceiveMessage(async (message: SelectionMessage | { command: string }) => {
-            if (message.command === 'selectedArea') {
-                const selectionMessage = message as SelectionMessage;
+        await this.captureAndRefresh();
+    }
 
-                if (selectionMessage.mode === 'template' && selectionMessage.pos && selectionMessage.resolution && selectionMessage.content) {
-                    this.selectionByDocument.set(document.uri.toString(), {
-                        pos: selectionMessage.pos,
-                        resolution: selectionMessage.resolution,
-                        content: selectionMessage.content
-                    });
-                    await this.saveSelectionImage();
-                    return;
-                }
-
-                if (selectionMessage.mode === 'coords' && selectionMessage.pos) {
-                    await this.copyRectCoordinates(selectionMessage.pos);
-                    return;
-                }
-
-                if (selectionMessage.mode === 'point' && selectionMessage.point) {
-                    await this.copyPointCoordinates(selectionMessage.point);
-                    return;
-                }
-
+    private async handleMessage(message: WebviewMessage): Promise<void> {
+        if (message.command === 'selectedArea') {
+            if (message.mode === 'template' && message.pos && message.resolution && message.content) {
+                this.currentSelection = {
+                    pos: message.pos,
+                    resolution: message.resolution,
+                    content: message.content
+                };
+                await saveSelectionImage(this.currentSelection);
                 return;
             }
 
-            if (message.command === 'copySelection') {
-                await this.copySelection();
+            if (message.mode === 'coords' && message.pos) {
+                await copyRectCoordinates(message.pos);
                 return;
             }
 
-            if (message.command === 'saveSelection') {
-                await this.saveSelectionImage();
-                return;
+            if (message.mode === 'point' && message.point) {
+                await copyPointCoordinates(message.point);
             }
+            return;
+        }
 
-            if (message.command === 'cleanCropImage') {
-                await this.cleanCropImages();
-                return;
-            }
+        if (message.command === 'saveSelection') {
+            await saveSelectionImage(this.currentSelection);
+            return;
+        }
 
-            if (message.command === 'startUpdate') {
-                if (updateInterval) {
-                    clearInterval(updateInterval);
-                }
-                updateInterval = setInterval(() => {
-                    void captureAndRefresh();
-                }, 1000);
-                void captureAndRefresh();
-                return;
-            }
+        if (message.command === 'cleanCropImage') {
+            await cleanCropImages();
+            return;
+        }
 
-            if (message.command === 'stopUpdate') {
-                if (updateInterval) {
-                    clearInterval(updateInterval);
-                    updateInterval = undefined;
-                }
-                return;
-            }
+        if (message.command === 'startUpdate') {
+            this.startAutoUpdate();
+            await this.captureAndRefresh();
+            return;
+        }
 
-            if (message.command === 'updateOnce') {
-                if (updateInterval) {
-                    clearInterval(updateInterval);
-                    updateInterval = undefined;
-                }
-                await captureAndRefresh();
-            }
-        }, undefined, this.context.subscriptions);
+        if (message.command === 'stopUpdate') {
+            this.stopAutoUpdate();
+            return;
+        }
 
-        webviewPanel.onDidChangeViewState(() => {
-            if (webviewPanel.active) {
-                this.activePanel = webviewPanel;
-                this.activeDocumentUri = document.uri.toString();
-            }
+        if (message.command === 'updateOnce') {
+            this.stopAutoUpdate();
+            await this.captureAndRefresh();
+            return;
+        }
+
+        if (message.command === 'tapScreen' && message.point) {
+            await tapScreen(this.currentAdbCommand, this.currentAdbConnectTarget, message.point);
+            await this.captureAndRefresh();
+            return;
+        }
+
+        if (message.command === 'saveAdbConfig') {
+            this.currentAdbCommand = message.adbCommand?.trim() || 'adb';
+            this.currentAdbConnectTarget = message.adbConnectTarget?.trim() || extractDeviceTargetFromAdbCommand(this.currentAdbCommand);
+            await updateSettingValue(undefined, 'adbCommand', this.currentAdbCommand);
+            await updateSettingValue(undefined, 'adbConnectTarget', this.currentAdbConnectTarget || undefined);
+            await this.captureAndRefresh();
+            vscode.window.showInformationMessage('ADB settings updated.');
+        }
+    }
+
+    private startAutoUpdate(): void {
+        this.stopAutoUpdate();
+        this.updateInterval = setInterval(() => {
+            void this.captureAndRefresh();
+        }, 1000);
+    }
+
+    private stopAutoUpdate(): void {
+        if (this.updateInterval) {
+            clearInterval(this.updateInterval);
+            this.updateInterval = undefined;
+        }
+    }
+
+    private async captureAndRefresh(): Promise<void> {
+        const screenshotPath = await ensureScreenshotPath(this.context);
+        try {
+            await captureScreenshot(screenshotPath, this.currentAdbCommand, this.currentAdbConnectTarget);
+            await this.render();
+        } catch (error) {
+            vscode.window.showErrorMessage(`Error taking screenshot: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+
+    private async render(): Promise<void> {
+        if (!this.panel) {
+            return;
+        }
+
+        const screenshotPath = await ensureScreenshotPath(this.context);
+        await ensureScreenshotFileExists(screenshotPath);
+        this.panel.webview.html = await getWebviewContent(this.context, screenshotPath, {
+            adbCommand: this.currentAdbCommand,
+            adbConnectTarget: this.currentAdbConnectTarget,
+            isMac: this.isMac
         });
-
-        webviewPanel.onDidDispose(() => {
-            messageSubscription.dispose();
-            if (updateInterval) {
-                clearInterval(updateInterval);
-            }
-            if (this.activePanel === webviewPanel) {
-                this.activePanel = undefined;
-                this.activeDocumentUri = undefined;
-            }
-        });
-    }
-
-    async copySelection(): Promise<void> {
-        const selection = this.getActiveSelection();
-        if (!selection) {
-            vscode.window.showWarningMessage('No crop selection available yet.');
-            return;
-        }
-
-        await vscode.env.clipboard.writeText(formatSelectionCoordinates(selection.pos));
-        vscode.window.showInformationMessage('Selection coordinates copied.');
-    }
-
-    async copyRectCoordinates(pos: { x: number; y: number; width: number; height: number }): Promise<void> {
-        await vscode.env.clipboard.writeText(formatSelectionCoordinates(pos));
-        vscode.window.showInformationMessage('Selection coordinates copied.');
-    }
-
-    async copyPointCoordinates(point: { x: number; y: number }): Promise<void> {
-        await vscode.env.clipboard.writeText(formatPointCoordinates(point));
-        vscode.window.showInformationMessage('Point coordinates copied.');
-    }
-
-    async saveSelectionImage(): Promise<void> {
-        const selection = this.getActiveSelection();
-        if (!selection) {
-            vscode.window.showWarningMessage('No crop selection available yet.');
-            return;
-        }
-
-        const imageBuffer = Buffer.from(selection.content.split(',')[1], 'base64');
-        const timestamp = Date.now();
-        const fileName = `tpl${timestamp}.png`;
-        const workspaceRoot = await this.getWorkspaceRoot();
-        if (!workspaceRoot) {
-            vscode.window.showWarningMessage('Open a workspace or file before saving crop images.');
-            return;
-        }
-
-        const templateDir = await this.getTemplateDir();
-        const filePath = path.isAbsolute(templateDir)
-            ? path.join(templateDir, fileName)
-            : path.join(workspaceRoot, templateDir, fileName);
-        const relativeTemplatePath = normalizeTemplatePath(path.relative(workspaceRoot, filePath));
-
-        await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-        await fs.promises.writeFile(filePath, imageBuffer);
-
-        const pos = calcPos(selection.pos, selection.resolution);
-        const templateString = buildTemplateString(relativeTemplatePath, pos.delta_x, pos.delta_y, selection.resolution);
-        await vscode.env.clipboard.writeText(templateString);
-
-        vscode.window.showInformationMessage(`Image saved as ${relativeTemplatePath} and template copied.`);
-    }
-
-    async cleanCropImages(): Promise<void> {
-        const workspaceRoot = await this.getWorkspaceRoot();
-        if (!workspaceRoot) {
-            vscode.window.showWarningMessage('Open a workspace or file before cleaning crop images.');
-            return;
-        }
-
-        const templateDir = await this.getTemplateDir();
-        const templateRoot = path.isAbsolute(templateDir)
-            ? templateDir
-            : path.join(workspaceRoot, templateDir);
-        const candidates = await findUnusedCropImages(workspaceRoot, templateRoot);
-        if (candidates.length === 0) {
-            vscode.window.showInformationMessage('No unused crop images found.');
-            return;
-        }
-
-        for (const filePath of candidates) {
-            await fs.promises.unlink(filePath);
-        }
-
-        vscode.window.showInformationMessage(`Removed ${candidates.length} unused crop image(s).`);
-    }
-
-    private getActiveSelection(): CropSelection | undefined {
-        if (!this.activeDocumentUri) {
-            return undefined;
-        }
-
-        return this.selectionByDocument.get(this.activeDocumentUri);
-    }
-
-    private async getWorkspaceRoot(): Promise<string | undefined> {
-        const activeEditor = vscode.window.activeTextEditor;
-        if (activeEditor) {
-            const workspaceFolder = vscode.workspace.getWorkspaceFolder(activeEditor.document.uri);
-            if (workspaceFolder) {
-                return workspaceFolder.uri.fsPath;
-            }
-
-            return path.dirname(activeEditor.document.uri.fsPath);
-        }
-
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-        if (workspaceFolder) {
-            return workspaceFolder.uri.fsPath;
-        }
-
-        return undefined;
-    }
-
-    private async getTemplateDir(): Promise<string> {
-        const activeEditor = vscode.window.activeTextEditor;
-        const workspaceFolder = activeEditor ? vscode.workspace.getWorkspaceFolder(activeEditor.document.uri) : vscode.workspace.workspaceFolders?.[0];
-        const scope = workspaceFolder?.uri;
-        return getSettingValue(scope, 'templateDir') ?? 'assets/templates/';
     }
 }
 
 export function activate(context: vscode.ExtensionContext) {
-    const imageEditorProvider = new ImagePreviewEditorProvider(context);
+    const workbenchPanel = new AirtestWorkbenchPanel(context);
     let codePreviewEnabled = true;
 
-    const takeScreenshotCommand = vscode.commands.registerCommand(CAPTURE_SCREENSHOT_COMMAND, async () => {
-        const screenshotPath = await ensureScreenshotPath(context);
-        const adbPath = getAdbCommand(); // 读取用户设置或默认值 adb
-
-        try {
-            await captureScreenshot(screenshotPath, adbPath);
-            const screenshotUri = vscode.Uri.file(screenshotPath);
-            await vscode.commands.executeCommand('vscode.openWith', screenshotUri, IMAGE_PREVIEW_VIEW_TYPE);
-        } catch (error) {
-            vscode.window.showErrorMessage(`Error taking screenshot: ${error instanceof Error ? error.message : String(error)}`);
-        }
-    });
-
-    const cleanCropImageCommand = vscode.commands.registerCommand(CLEAN_CROP_IMAGES_COMMAND, async () => {
-        await imageEditorProvider.cleanCropImages();
-    });
-
     context.subscriptions.push(
-        takeScreenshotCommand,
-        cleanCropImageCommand,
-        vscode.window.registerCustomEditorProvider(
-            IMAGE_PREVIEW_VIEW_TYPE,
-            imageEditorProvider,
-            { webviewOptions: { retainContextWhenHidden: true } }
-        )
-    );
-
-    context.subscriptions.push(
+        vscode.commands.registerCommand(CAPTURE_SCREENSHOT_COMMAND, async () => {
+            await workbenchPanel.revealAndCapture();
+        }),
+        vscode.commands.registerCommand(CLEAN_CROP_IMAGES_COMMAND, async () => {
+            await cleanCropImages();
+        }),
         vscode.commands.registerCommand(ENABLE_HOVER_PREVIEW_COMMAND, () => {
             codePreviewEnabled = true;
             vscode.window.showInformationMessage('Code hover preview enabled.');
@@ -344,35 +215,34 @@ export function activate(context: vscode.ExtensionContext) {
     );
 }
 
-function escapeHtml(unsafe) {
+async function getWebviewContent(
+    context: vscode.ExtensionContext,
+    screenshotPath: string,
+    options?: {
+        adbCommand?: string;
+        adbConnectTarget?: string;
+        isMac?: boolean;
+    }
+): Promise<string> {
+    const imageUrl = await readImageAsDataUrl(screenshotPath);
+    const extensionPath = context.extensionUri.fsPath;
+    const htmlFilePath = path.join(extensionPath, 'webview.html');
+    const htmlContent = await fs.promises.readFile(htmlFilePath, 'utf8');
+    const modifierKey = options?.isMac ? 'Cmd' : 'Ctrl';
+    return htmlContent
+        .replace('__IMAGE_URL__', imageUrl)
+        .replaceAll('__MODIFIER_KEY__', modifierKey)
+        .replace('__ADB_COMMAND__', escapeHtml(options?.adbCommand ?? getAdbCommand()))
+        .replace('__ADB_CONNECT_TARGET__', escapeHtml(options?.adbConnectTarget ?? getAdbConnectTarget(options?.adbCommand) ?? ''));
+}
+
+function escapeHtml(unsafe: string): string {
     return unsafe
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#039;');
-}
-
-
-function calcPos(pos: { x: number, y: number, width: number, height: number }, resolution: { width: number, height: number }): { delta_x: string, delta_y: string } {
-    const { width, height } = resolution;
-    const x = pos.x + pos.width / 2;
-    const y = pos.y + pos.height / 2;
-
-    const delta_x = ((x - width * 0.5) / width).toFixed(3);
-    // Airtest uses the screenshot width as the normalization base for both axes.
-    const delta_y = ((y - height * 0.5) / width).toFixed(3);
-    return { delta_x: delta_x, delta_y: delta_y };
-}
-
-async function getWebviewContent(context: vscode.ExtensionContext, screenshotPath: string): Promise<string> {
-    const imageUrl = await readImageAsDataUrl(screenshotPath);
-    const extensionPath = context.extensionUri.fsPath;
-    // 定义 HTML 文件路径
-    const htmlFilePath = path.join(extensionPath, 'webview.html');
-    const htmlContent = await fs.promises.readFile(htmlFilePath, 'utf8');
-    const finalHtmlContent = htmlContent.replace('${imageUrl}', imageUrl);
-    return finalHtmlContent;
 }
 
 async function readImageAsDataUrl(filePath: string): Promise<string> {
@@ -387,12 +257,53 @@ async function ensureScreenshotPath(context: vscode.ExtensionContext): Promise<s
     return path.join(storagePath, 'screenshot.png');
 }
 
-async function captureScreenshot(screenshotPath: string, adbPath: string): Promise<void> {
+async function ensureScreenshotFileExists(screenshotPath: string): Promise<void> {
+    if (fs.existsSync(screenshotPath)) {
+        return;
+    }
+
+    const emptyPng = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0ioAAAAASUVORK5CYII=',
+        'base64'
+    );
+    await fs.promises.writeFile(screenshotPath, emptyPng);
+}
+
+async function captureScreenshot(screenshotPath: string, adbPath: string, adbConnectTarget?: string): Promise<void> {
     const screenshotName = path.basename(screenshotPath);
     const remotePath = `/sdcard/${screenshotName}`;
-    const { stderr } = await exec(`${adbPath} shell screencap -p "${remotePath}"; ${adbPath} pull "${remotePath}" "${screenshotPath}"`);
-    if (stderr) {
-        throw new Error(stderr);
+    try {
+        await exec(`${adbPath} shell screencap -p "${remotePath}"; ${adbPath} pull "${remotePath}" "${screenshotPath}"`);
+    } catch (error) {
+        if (adbConnectTarget) {
+            try {
+                await exec(`${adbPath} connect ${adbConnectTarget}`);
+                await exec(`${adbPath} shell screencap -p "${remotePath}"; ${adbPath} pull "${remotePath}" "${screenshotPath}"`);
+                return;
+            } catch (retryError) {
+                throw normalizeExecError(retryError);
+            }
+        }
+
+        throw normalizeExecError(error);
+    }
+}
+
+async function tapScreen(adbPath: string, adbConnectTarget: string | undefined, point: { x: number; y: number }): Promise<void> {
+    try {
+        await exec(`${adbPath} shell input tap ${point.x} ${point.y}`);
+    } catch (error) {
+        if (adbConnectTarget) {
+            try {
+                await exec(`${adbPath} connect ${adbConnectTarget}`);
+                await exec(`${adbPath} shell input tap ${point.x} ${point.y}`);
+                return;
+            } catch (retryError) {
+                throw normalizeExecError(retryError);
+            }
+        }
+
+        throw normalizeExecError(error);
     }
 }
 
@@ -400,7 +311,11 @@ function getAdbCommand(): string {
     return getSettingValue(undefined, 'adbCommand') ?? 'adb';
 }
 
-function getSettingValue(scope: vscode.Uri | undefined, key: 'adbCommand' | 'templateDir'): string | undefined {
+function getAdbConnectTarget(adbCommand = getAdbCommand()): string | undefined {
+    return getSettingValue(undefined, 'adbConnectTarget') ?? extractDeviceTargetFromAdbCommand(adbCommand);
+}
+
+function getSettingValue(scope: vscode.Uri | undefined, key: 'adbCommand' | 'adbConnectTarget' | 'templateDir'): string | undefined {
     const config = vscode.workspace.getConfiguration(EXTENSION_ID, scope);
     const value = config.get<string>(key);
     if (value) {
@@ -411,8 +326,126 @@ function getSettingValue(scope: vscode.Uri | undefined, key: 'adbCommand' | 'tem
     if (key === 'adbCommand') {
         return legacyConfig.get<string>('adbPath');
     }
+    if (key === 'adbConnectTarget') {
+        return undefined;
+    }
 
     return legacyConfig.get<string>('templateDir');
+}
+
+async function updateSettingValue(
+    scope: vscode.Uri | undefined,
+    key: 'adbCommand' | 'adbConnectTarget',
+    value: string | undefined
+): Promise<void> {
+    const config = vscode.workspace.getConfiguration(EXTENSION_ID, scope);
+    await config.update(key, value, vscode.ConfigurationTarget.Global);
+}
+
+function extractDeviceTargetFromAdbCommand(adbCommand: string): string | undefined {
+    const match = adbCommand.match(/(?:^|\s)-s\s+([^\s]+)/);
+    return match?.[1];
+}
+
+async function copyRectCoordinates(pos: { x: number; y: number; width: number; height: number }): Promise<void> {
+    await vscode.env.clipboard.writeText(formatSelectionCoordinates(pos));
+    vscode.window.showInformationMessage('Selection coordinates copied.');
+}
+
+async function copyPointCoordinates(point: { x: number; y: number }): Promise<void> {
+    await vscode.env.clipboard.writeText(formatPointCoordinates(point));
+    vscode.window.showInformationMessage('Point coordinates copied.');
+}
+
+async function saveSelectionImage(selection: CropSelection | undefined): Promise<void> {
+    if (!selection) {
+        vscode.window.showWarningMessage('No crop selection available yet.');
+        return;
+    }
+
+    const imageBuffer = Buffer.from(selection.content.split(',')[1], 'base64');
+    const timestamp = Date.now();
+    const fileName = `tpl${timestamp}.png`;
+    const workspaceRoot = await getWorkspaceRoot();
+    if (!workspaceRoot) {
+        vscode.window.showWarningMessage('Open a workspace or file before saving crop images.');
+        return;
+    }
+
+    const templateDir = await getTemplateDir();
+    const filePath = path.isAbsolute(templateDir)
+        ? path.join(templateDir, fileName)
+        : path.join(workspaceRoot, templateDir, fileName);
+    const relativeTemplatePath = normalizeTemplatePath(path.relative(workspaceRoot, filePath));
+
+    await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.promises.writeFile(filePath, imageBuffer);
+
+    const pos = calcPos(selection.pos, selection.resolution);
+    const templateString = buildTemplateString(relativeTemplatePath, pos.delta_x, pos.delta_y, selection.resolution);
+    await vscode.env.clipboard.writeText(templateString);
+
+    vscode.window.showInformationMessage(`Image saved as ${relativeTemplatePath} and template copied.`);
+}
+
+async function cleanCropImages(): Promise<void> {
+    const workspaceRoot = await getWorkspaceRoot();
+    if (!workspaceRoot) {
+        vscode.window.showWarningMessage('Open a workspace or file before cleaning crop images.');
+        return;
+    }
+
+    const templateDir = await getTemplateDir();
+    const templateRoot = path.isAbsolute(templateDir)
+        ? templateDir
+        : path.join(workspaceRoot, templateDir);
+    const candidates = await findUnusedCropImages(workspaceRoot, templateRoot);
+    if (candidates.length === 0) {
+        vscode.window.showInformationMessage('No unused crop images found.');
+        return;
+    }
+
+    for (const filePath of candidates) {
+        await fs.promises.unlink(filePath);
+    }
+
+    vscode.window.showInformationMessage(`Removed ${candidates.length} unused crop image(s).`);
+}
+
+async function getWorkspaceRoot(): Promise<string | undefined> {
+    const activeEditor = vscode.window.activeTextEditor;
+    if (activeEditor) {
+        const workspaceFolder = vscode.workspace.getWorkspaceFolder(activeEditor.document.uri);
+        if (workspaceFolder) {
+            return workspaceFolder.uri.fsPath;
+        }
+
+        return path.dirname(activeEditor.document.uri.fsPath);
+    }
+
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (workspaceFolder) {
+        return workspaceFolder.uri.fsPath;
+    }
+
+    return undefined;
+}
+
+async function getTemplateDir(): Promise<string> {
+    const activeEditor = vscode.window.activeTextEditor;
+    const workspaceFolder = activeEditor ? vscode.workspace.getWorkspaceFolder(activeEditor.document.uri) : vscode.workspace.workspaceFolders?.[0];
+    const scope = workspaceFolder?.uri;
+    return getSettingValue(scope, 'templateDir') ?? 'assets/templates/';
+}
+
+function calcPos(pos: { x: number; y: number; width: number; height: number }, resolution: { width: number; height: number }): { delta_x: string; delta_y: string } {
+    const { width, height } = resolution;
+    const x = pos.x + pos.width / 2;
+    const y = pos.y + pos.height / 2;
+    return {
+        delta_x: ((x - width * 0.5) / width).toFixed(3),
+        delta_y: ((y - height * 0.5) / width).toFixed(3)
+    };
 }
 
 function formatSelectionCoordinates(pos: { x: number; y: number; width: number; height: number }): string {
@@ -439,35 +472,25 @@ function buildCodeHover(lineText: string, fileDir: string, workspaceRoot: string
 
     const imagePath = resolveImagePath(imageRef, fileDir, workspaceRoot);
     if (!imagePath) {
-        const missing = new vscode.MarkdownString(`Template image not found: \`${imageRef}\``);
-        return new vscode.Hover(missing);
+        return new vscode.Hover(new vscode.MarkdownString(`Template image not found: \`${imageRef}\``));
     }
 
     const markdown = new vscode.MarkdownString(undefined, true);
     markdown.isTrusted = true;
     markdown.supportHtml = true;
-    const imageUri = vscode.Uri.file(imagePath).toString();
-    markdown.appendMarkdown(`![${imageRef}](${imageUri})`);
+    markdown.appendMarkdown(`![${imageRef}](${vscode.Uri.file(imagePath).toString()})`);
     return new vscode.Hover(markdown);
 }
 
 function extractTemplateImageRef(lineText: string): string | undefined {
     const templateMatch = lineText.match(/Template\s*\(\s*r?["']([^"']+\.png)["']/);
-    if (templateMatch) {
-        return templateMatch[1];
-    }
-
-    return undefined;
+    return templateMatch?.[1];
 }
 
 function resolveImagePath(imageRef: string, fileDir: string, workspaceRoot: string): string | undefined {
     const candidates = path.isAbsolute(imageRef)
         ? [imageRef]
-        : [
-            path.join(workspaceRoot, imageRef),
-            path.join(fileDir, imageRef),
-            path.resolve(fileDir, imageRef)
-        ];
+        : [path.join(workspaceRoot, imageRef), path.join(fileDir, imageRef), path.resolve(fileDir, imageRef)];
 
     for (const candidate of candidates) {
         if (fs.existsSync(candidate)) {
@@ -537,7 +560,7 @@ async function isFileReferenced(rootDir: string, fileName: string): Promise<bool
 
 async function exec(command: string): Promise<{ stdout: string; stderr: string }> {
     return new Promise((resolve, reject) => {
-        const child = require('child_process').exec(command, (error: any, stdout: any, stderr: any) => { // ignore_security_alert_wait_for_fix RCE
+        require('child_process').exec(command, (error: Error | null, stdout: string, stderr: string) => { // ignore_security_alert_wait_for_fix RCE
             if (error) {
                 reject({ error, stdout, stderr });
             } else {
@@ -545,6 +568,16 @@ async function exec(command: string): Promise<{ stdout: string; stderr: string }
             }
         });
     });
+}
+
+function normalizeExecError(error: unknown): Error {
+    if (error instanceof Error) {
+        return error;
+    }
+
+    const stderr = typeof error === 'object' && error && 'stderr' in error ? String((error as { stderr?: string }).stderr ?? '') : '';
+    const stdout = typeof error === 'object' && error && 'stdout' in error ? String((error as { stdout?: string }).stdout ?? '') : '';
+    return new Error(stderr || stdout || String(error));
 }
 
 export function deactivate() { }

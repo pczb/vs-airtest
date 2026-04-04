@@ -10,8 +10,14 @@ const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
 const vsixName = `${packageJson.name}-${packageJson.version}.vsix`;
 const vsixPath = path.join(rootDir, vsixName);
 
-console.log('Building extension package...');
+console.log('Building extension bundle...');
 execFileSync('npm', ['run', 'package'], {
+    cwd: rootDir,
+    stdio: 'inherit'
+});
+
+console.log('Packaging fresh VSIX...');
+execFileSync('npx', ['@vscode/vsce', 'package'], {
     cwd: rootDir,
     stdio: 'inherit'
 });

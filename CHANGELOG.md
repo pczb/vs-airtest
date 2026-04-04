@@ -6,8 +6,16 @@ Check [Keep a Changelog](https://keepachangelog.com/) for recommendations on how
 
 ## [Unreleased]
 
-- Renamed the extension to VS AirTest and unified the manifest, settings, and commands around the `vsairtest` namespace
-- Switched the screenshot editor to keyboard-friendly shortcuts for copy and save flows
+## [0.0.3] - 2026-04-04
+
+- Replaced custom editor with dedicated Airtest Workbench webview panel for better reliability
+- Added editable ADB command and connect-target fields with auto-save on Enter
+- Added device tap action (Cmd/Ctrl+Click) with automatic screen refresh
+- Enhanced screenshot capture with automatic `adb connect` retry on failure
+- Added keyboard shortcuts: R (refresh once), A (toggle auto-refresh), S (save crop), X (clean crops)
+- Improved toolbar layout with config inputs and capture status indicator
+- Refactored codebase with better error handling and standalone utility functions
+- Added `vsairtest.adbConnectTarget` setting for explicit connect target configuration
 
 ## [0.0.2] - 2026-03-28
 

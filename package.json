@@ -2,7 +2,7 @@
   "name": "vsairtest",
   "displayName": "VS AirTest",
   "description": "VS Code extension for Airtest-style Android screenshot capture, crop templates, and hover previews.",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "tigerzhang",
   "license": "SEE LICENSE IN LICENSE",
   "icon": "icon.png",
@@ -39,8 +39,7 @@
     "onCommand:vsairtest.captureScreenshot",
     "onCommand:vsairtest.cleanCropImages",
     "onCommand:vsairtest.enableHoverPreview",
-    "onCommand:vsairtest.disableHoverPreview",
-    "onCustomEditor:vsairtest.imagePreview"
+    "onCommand:vsairtest.disableHoverPreview"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -52,6 +51,11 @@
           "default": "adb",
           "description": "ADB command used for screenshots. Example: adb -s 127.0.0.1:16384"
         },
+        "vsairtest.adbConnectTarget": {
+          "type": "string",
+          "default": "",
+          "description": "ADB target used for adb connect retries. Example: 127.0.0.1:16384"
+        },
         "vsairtest.templateDir": {
           "type": "string",
           "default": "assets/templates/",
@@ -59,22 +63,10 @@
         }
       }
     },
-    "customEditors": [
-      {
-        "viewType": "vsairtest.imagePreview",
-        "displayName": "VS AirTest Preview",
-        "selector": [
-          {
-            "filenamePattern": "*.png"
-          }
-        ],
-        "priority": "option"
-      }
-    ],
     "commands": [
       {
         "command": "vsairtest.captureScreenshot",
-        "title": "Capture Screenshot"
+        "title": "Open Airtest Workbench"
       },
       {
         "command": "vsairtest.cleanCropImages",
